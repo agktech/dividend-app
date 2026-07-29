@@ -1,5 +1,5 @@
 streamlit==1.36.0
-pandas==2.2.2
-yfinance==0.2.40
-psx-data-reader==1.0.4
-plotly==5.22.0
+pandas
+yfinance
+psx-data-reader
+plotly
