@@ -14,25 +14,13 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for a cleaner, more minimal look
+# Custom CSS for a cleaner look
 st.markdown("""
 <style>
-    .main .block-container {
-        padding-top: 2rem;
-        padding-bottom: 2rem;
-    }
-    h1 {
-        font-family: 'Helvetica Neue', sans-serif;
-        font-weight: 700;
-        color: #0E1117;
-    }
-    h2, h3 {
-        font-family: 'Helvetica Neue', sans-serif;
-        font-weight: 600;
-        color: #262730;
-    }
+    .main .block-container { padding-top: 2rem; padding-bottom: 2rem; }
+    h1 { font-family: 'Helvetica Neue', sans-serif; font-weight: 700; color: #0E1117; }
+    h2, h3 { font-family: 'Helvetica Neue', sans-serif; font-weight: 600; color: #262730; }
     .stDataFrame { font-size: 0.95rem; }
-    /* Subtle border for metric containers */
     [data-testid="stMetric"] {
         background-color: #f8f9fa;
         border-radius: 0.5rem;
@@ -43,18 +31,10 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
-# 2. HEADER & INSTRUCTIONS
+# 2. HEADER
 # -----------------------------------------------------------------------------
 st.title("📈 Dividend Scout")
-st.caption("A professional screener for high-yield, actively trading dividend stocks across global markets.")
-
-with st.expander("ℹ️ Quick Guide: How to use this tool", expanded=False):
-    st.markdown("""
-    1.  **Select Market:** Choose between the Pakistan Stock Exchange (PSX) or Major US indices via the sidebar.
-    2.  **Set Minimum Yield:** Adjust the slider in the sidebar to filter out stocks below your desired annual dividend percentage.
-    3.  **View Results:** The main table shows active companies matching your criteria.
-    4.  **Deep Dive:** Select a specific company from the dropdown below the results table to visualize its complete payout history.
-    """)
+st.caption("A professional screener for high-yield, actively trading dividend stocks.")
 
 # -----------------------------------------------------------------------------
 # 3. SIDEBAR CONTROLS
@@ -71,44 +51,71 @@ with st.sidebar:
     st.divider()
     
     st.subheader("Filters")
+    # Lowered default to 5% to ensure results appear immediately
     min_yield = st.slider(
         "Minimum Annual Yield (%)",
         min_value=0.0,
         max_value=25.0,
-        value=8.0,
+        value=5.0,
         step=0.5,
         format="%d%%",
         help="Filter stocks with a trailing annual dividend yield below this value."
     )
 
     st.divider()
-    
     if "Pakistan" in market_choice:
-        st.info("💡 **PSX Data Note:** Tickers are fetched live via `psx-data-reader` and appended with `.KA` for Yahoo Finance retrieval.")
-    else:
-        st.info("💡 **Global Data Note:** Scanning major US large-cap dividend payers.")
+        st.info("💡 **PSX Note:** Data is fetched via Yahoo Finance using '.KA' suffix. Yield data may be delayed for some scrips.")
 
 # -----------------------------------------------------------------------------
 # 4. DATA ACQUISITION (Cached)
 # -----------------------------------------------------------------------------
+# Robust fallback list of known high-dividend PSX stocks to ensure results
+PSX_FALLBACK_TICKERS = {
+    "FFC.KA": "Fauji Fertilizer Company", "EFERT.KA": "Engro Fertilizers",
+    "ENGRO.KA": "Engro Corporation", "HUBC.KA": "Hub Power Company",
+    "UBL.KA": "United Bank Limited", "MCB.KA": "MCB Bank Limited",
+    "HBL.KA": "Habib Bank Limited", "MEBL.KA": "Meezan Bank Limited",
+    "OGDC.KA": "Oil & Gas Development Co", "PPL.KA": "Pakistan Petroleum Ltd",
+    "POL.KA": "Pakistan Oilfields Ltd", "MARI.KA": "Mari Petroleum Company",
+    "LUCK.KA": "Lucky Cement Limited", "KOHC.KA": "Kohat Cement Company",
+    "SYS.KA": "Systems Limited", "TRG.KA": "TRG Pakistan",
+    "AVN.KA": "Avanceon Limited", "PSO.KA": "Pakistan State Oil",
+    "SNGP.KA": "Sui Northern Gas Pipelines", "SSGC.KA": "Sui Southern Gas Corp",
+    "KAPCO.KA": "Kot Addu Power Company", "NCPL.KA": "Nishat Chunian Power",
+    "NPL.KA": "Nishat Power Limited", "PKGS.KA": "Packages Limited",
+    "INDU.KA": "Indus Motor Company", "MTL.KA": "Millat Tractors Limited",
+    "FATIMA.KA": "Fatima Fertilizer Company", "BAFL.KA": "Bank Alfalah Limited",
+    "BAHL.KA": "Bank AL Habib Limited", "AKBL.KA": "Askari Bank Limited",
+    "FABL.KA": "Faysal Bank Limited", "BOP.KA": "The Bank of Punjab"
+}
+
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_psx_tickers_map():
     psx_dict = {}
+    data_source = "live"
     try:
+        # Try fetching live list first
         tickers_df = psx_tickers()
+        if tickers_df.empty:
+             raise ValueError("Empty ticker list returned from API")
+             
         for symbol, row in tickers_df.iterrows():
             yf_symbol = f"{symbol}.KA"
-            # Clean company name, remove extra spaces
             company_name = str(row.get('Name', symbol)).strip()
             psx_dict[yf_symbol] = company_name
-        return psx_dict
+            
+        # If live fetch yielded too few results, merge with fallback
+        if len(psx_dict) < 50:
+             psx_dict.update(PSX_FALLBACK_TICKERS)
+             data_source = "hybrid"
+             
     except Exception as e:
-        st.error(f"Could not fetch PSX source data. Using limited fallback list. Error: {e}")
-        return {
-             "ENGRO.KA": "Engro Corporation", "FFC.KA": "Fauji Fertilizer Company",
-             "HUBC.KA": "Hub Power Company", "MCB.KA": "MCB Bank Limited",
-             "OGDC.KA": "Oil & Gas Development Company", "LUCK.KA": "Lucky Cement"
-        }
+        # On any error, use the robust fallback list
+        psx_dict = PSX_FALLBACK_TICKERS
+        data_source = "fallback"
+        print(f"PSX Data Error: {e}. Using fallback list.")
+        
+    return psx_dict, data_source
 
 GLOBAL_TICKERS = {
     "T": "AT&T Inc.", "VZ": "Verizon Communications", "KO": "The Coca-Cola Company", 
@@ -119,11 +126,17 @@ GLOBAL_TICKERS = {
 
 # Market Context Setup
 if "Pakistan" in market_choice:
-    ticker_map = get_psx_tickers_map()
+    ticker_map, source_status = get_psx_tickers_map()
     currency_symbol = "PKR"
     market_name = "PSX"
-    # Performance limit for demo - remove in full production if server handles it
-    ticker_map = dict(list(ticker_map.items())[:150])
+    
+    if source_status == "fallback":
+         st.toast("Using curated list of top PSX dividend stocks due to API connectivity issues.", icon="ℹ️")
+    elif source_status == "hybrid":
+         st.toast("Using hybrid list of live and curated PSX stocks.", icon="ℹ️")
+
+    # Performance limit for demo - keep it brisk
+    ticker_map = dict(list(ticker_map.items())[:100])
 else:
     ticker_map = GLOBAL_TICKERS
     currency_symbol = "USD"
@@ -133,79 +146,91 @@ else:
 # 5. CORE SCREENER ENGINE (Cached)
 # -----------------------------------------------------------------------------
 @st.cache_data(ttl=3600, show_spinner=False)
-def run_screener(symbol_dict):
+def run_screener(symbol_dict, market_context):
     results = []
     total = len(symbol_dict)
     
-    # Use st.status for a cleaner loading experience
-    with st.status(f"Scanning {total} tickers on {market_name}...", expanded=True) as status:
+    with st.status(f"Scanning {total} tickers on {market_context}...", expanded=True) as status:
         for i, (full_ticker, company_name) in enumerate(symbol_dict.items()):
             clean_symbol = full_ticker.replace(".KA", "")
             if i % 5 == 0 or i == total - 1:
-                 status.update(label=f"Scanning {market_name}: Analyzing {clean_symbol} ({i+1}/{total})...")
+                 status.update(label=f"Scanning {market_context}: Analyzing {clean_symbol} ({i+1}/{total})...")
             
             try:
                 stock = yf.Ticker(full_ticker)
-                # Check activity via 5d history
+                # Check activity via 5d history to ensure it's not delisted
                 history = stock.history(period="5d")
                 
                 if not history.empty:
                     is_active = True
                     current_price = history["Close"].iloc[-1]
                     info = stock.info
+                    
+                    # --- YIELD FETCHING LOGIC ---
+                    # Yahoo often returns None for PSX yields.
                     raw_yield = info.get("trailingAnnualDividendYield")
-                    yield_pct = (raw_yield * 100) if raw_yield else 0.0
+                    
+                    if raw_yield is not None:
+                        yield_decimal = raw_yield
+                    else:
+                        # If Yahoo data is missing, assume 0 for now to avoid crashing.
+                        # (In a full prod app, we would calculate TTM yield manually here)
+                        yield_decimal = 0.0
+                        
                 else:
                     is_active = False
                     current_price = 0.0
-                    yield_pct = 0.0
+                    yield_decimal = 0.0
 
                 results.append({
                     "Symbol": clean_symbol,
                     "yf_ticker": full_ticker,
                     "Company Name": company_name,
                     "Price": current_price,
-                    "Yield (%)": yield_pct / 100, # Keep as decimal for formatting later
+                    # Store as decimal (e.g., 0.12 for 12%) for easier filtering later
+                    "Yield Decimal": yield_decimal, 
                     "is_active": is_active
                 })
             except Exception:
                 pass # Skip problematic tickers silently
         
-        status.update(label="Market scan complete!", state="complete", expanded=False)
+        status.update(label=f"Scan complete. Found data for {len(results)} companies.", state="complete", expanded=False)
             
     return pd.DataFrame(results)
 
 # Execute Screener
-screener_df = run_screener(ticker_map)
+screener_df = run_screener(ticker_map, market_name)
 
 # -----------------------------------------------------------------------------
 # 6. RESULTS DASHBOARD
 # -----------------------------------------------------------------------------
-# Filter Results
+# Filter Results: Convert decimal yield to percentage for comparison against slider
 filtered_df = screener_df[
-    (screener_df["Yield (%)"] * 100 >= min_yield) & 
+    (screener_df["Yield Decimal"] * 100 >= min_yield) & 
     (screener_df["is_active"] == True)
 ].copy()
 
 st.divider()
 st.header(f"🎯 Screening Results")
-st.caption(f"Showing active companies in {market_name} with yield ≥ {min_yield}%")
+st.caption(f"Showing active companies in {market_name} with reported yield ≥ {min_yield}%")
 
 if filtered_df.empty:
-    st.warning(f"No active companies currently match a yield of {min_yield}% or higher. Try lowering the filter in the sidebar.")
+    st.warning(f"No active companies found with a reported yield of {min_yield}% or higher. Yahoo Finance may be missing yield data for these specific tickers right now. Try lowering the filter.")
 else:
     # Summary Metrics
     col1, col2, col3 = st.columns(3)
     col1.metric("Matches Found", f"{len(filtered_df)}")
-    col2.metric("Average Yield (Matches)", f"{(filtered_df['Yield (%)'].mean() * 100):.2f}%")
-    col3.metric("Highest Yield Found", f"{(filtered_df['Yield (%)'].max() * 100):.2f}%")
+    avg_yield = filtered_df['Yield Decimal'].mean() * 100
+    max_yield = filtered_df['Yield Decimal'].max() * 100
+    col2.metric("Average Yield (Matches)", f"{avg_yield:.2f}%")
+    col3.metric("Highest Yield Found", f"{max_yield:.2f}%")
     
     st.markdown("###") #Spacer
 
-    # Main Results Table with enhanced formatting
+    # Main Results Table
     st.dataframe(
         filtered_df,
-        column_order=("Symbol", "Company Name", "Price", "Yield (%)"),
+        column_order=("Symbol", "Company Name", "Price", "Yield Decimal"),
         hide_index=True,
         use_container_width=True,
         height=400,
@@ -216,12 +241,14 @@ else:
                 "Current Price",
                 format=f"{currency_symbol} %.2f",
             ),
-            "Yield (%)": st.column_config.ProgressColumn(
+            # Display the decimal column as a percentage progress bar
+            "Yield Decimal": st.column_config.ProgressColumn(
                 "Annual Yield",
                 format="%.2f%%",
                 min_value=0,
-                max_value=max(filtered_df["Yield (%)"].max(), 0.15), # Scale progress bar dynamically
-                help="Trailing Annual Dividend Yield"
+                # Dynamic max for progress bar scaling
+                max_value=max(filtered_df["Yield Decimal"].max(), 0.15), 
+                help="Trailing Annual Dividend Yield reported by Yahoo Finance"
             ),
         }
     )
@@ -233,12 +260,10 @@ st.divider()
 st.header("📜 Historical Payout Deep Dive")
 st.caption("Select a company from the filtered results above to analyze its dividend consistency.")
 
-# --- THE FIX FOR THE CRASH IS HERE ---
-# Ensure columns are treated as strings before concatenation to avoid TypeErrors
+# Ensure columns are string type before concatenation to prevent TypeErrors
 filtered_df["Symbol"] = filtered_df["Symbol"].astype(str)
 filtered_df["Company Name"] = filtered_df["Company Name"].astype(str)
 
-# Create dropdown options
 stock_options = dict(zip(filtered_df["yf_ticker"], filtered_df["Symbol"] + " - " + filtered_df["Company Name"]))
 
 if not stock_options:
@@ -253,20 +278,20 @@ else:
     )
 
     if selected_yf_ticker:
-        # Get data for selected stock
         stock_obj = yf.Ticker(selected_yf_ticker)
         
-        # Use containers for a structured layout
         with st.container():
-            # Fetch info for banner metrics
+            # Fetch info for banner metrics based on selection
             info = stock_obj.info
             current_price = info.get('currentPrice', info.get('previousClose', 0))
-            trailing_yield = info.get('trailingAnnualDividendYield', 0) * 100
+            # Handle cases where yield is missing in info block
+            raw_trailing_yield = info.get('trailingAnnualDividendYield')
+            trailing_yield = (raw_trailing_yield * 100) if raw_trailing_yield is not None else 0.0
             
             st.subheader(stock_options[selected_yf_ticker])
             mcol1, mcol2 = st.columns(2)
             mcol1.metric("Current Price", f"{currency_symbol} {current_price:,.2f}")
-            mcol2.metric("Trailing Yield", f"{trailing_yield:.2f}%")
+            mcol2.metric("Reported Trailing Yield", f"{trailing_yield:.2f}%")
 
         # Fetch dividend history
         div_series = stock_obj.dividends
@@ -281,23 +306,22 @@ else:
             tab1, tab2 = st.tabs(["📊 Payout Chart", "📄 Complete Data Log"])
             
             with tab1:
-                st.caption("Visualizing the last 50 payouts. Hover over bars for details.")
-                # Use Plotly Express for a more beautiful, interactive chart
+                st.caption("Visualizing payouts. Hover over bars for details.")
+                # Plotly Express Chart
                 fig = px.bar(
-                    div_df.head(50), 
+                    div_df.head(60), # Show last ~15 years of quarterly payouts
                     x="Date", 
                     y="Amount",
                     labels={"Date": "Payout Date", "Amount": f"Dividend ({currency_symbol})"},
-                    title="Recent Payout History",
                     color_discrete_sequence=["#00C805"], # Green color scheme
                 )
                 fig.update_layout(
                     xaxis_title=None,
                     yaxis_title=None,
                     hovermode="x unified",
-                    plot_bgcolor="rgba(0,0,0,0)", # Transparent background
+                    plot_bgcolor="rgba(0,0,0,0)",
                     paper_bgcolor="rgba(0,0,0,0)",
-                    margin=dict(l=20, r=20, t=40, b=20),
+                    margin=dict(l=20, r=20, t=20, b=20),
                     height=350
                 )
                 st.plotly_chart(fig, use_container_width=True)
