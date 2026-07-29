@@ -52,15 +52,14 @@ def get_current_pkt_time():
 def convert_df_to_excel(df):
     """Converts a pandas dataframe to an Excel file object in memory."""
     output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+    # Using openpyxl as the engine since it is standard for Pandas Excel export
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df.to_excel(writer, index=False, sheet_name='Sheet1')
     return output.getvalue()
 
 # -----------------------------------------------------------------------------
 # 3. ROBUST TICKER DICTIONARY (PSX ONLY)
 # -----------------------------------------------------------------------------
-# Since you requested specific PSX data points (High, Low, 24h Change) and 
-# the focus is now on the PSX, we will enforce the Pakistan market context.
 PSX_TICKERS = {
     "HUBC": "Hub Power Company", "EFERT": "Engro Fertilizers", 
     "FFC": "Fauji Fertilizer Company", "ENGRO": "Engro Corporation",
@@ -97,7 +96,7 @@ PSX_TICKERS = {
 # -----------------------------------------------------------------------------
 # 4. DIRECT API DATA FETCHING (Works 24/7)
 # -----------------------------------------------------------------------------
-@st.cache_data(ttl=900, show_spinner=False) # Cache for 15 mins to reduce API load
+@st.cache_data(ttl=900, show_spinner=False)
 def fetch_psx_market_data():
     """
     Fetches live market data from PSX API, including high, low, and change.
@@ -114,13 +113,11 @@ def fetch_psx_market_data():
             for item in raw_data:
                 symbol = item.get('symbol')
                 if symbol in PSX_TICKERS:
-                    # Extract values, defaulting to 0 if missing
                     current_price = float(item.get('price', 0))
                     high_price = float(item.get('high', 0))
                     low_price = float(item.get('low', 0))
                     change = float(item.get('change', 0))
                     
-                    # Calculate percentage change
                     if current_price - change != 0:
                         change_percent = (change / (current_price - change)) * 100
                     else:
@@ -140,7 +137,7 @@ def fetch_psx_market_data():
     except Exception as e:
         st.error(f"Failed to connect to PSX API: {e}")
     
-    return pd.DataFrame() # Return empty df on failure
+    return pd.DataFrame()
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_dividend_yield(symbol, current_price):
@@ -179,7 +176,6 @@ st.markdown(f"<div class='time-display'>🕒 {get_current_pkt_time()}</div>", un
 # -----------------------------------------------------------------------------
 # 6. MAIN DATA LOADING
 # -----------------------------------------------------------------------------
-# Fetch the master dataframe containing all live prices, highs, lows, etc.
 market_df = fetch_psx_market_data()
 
 # -----------------------------------------------------------------------------
@@ -194,20 +190,16 @@ if not market_df.empty:
     with tab1:
         st.header("Dividend Screener")
         
-        # --- Controls: Search, Filter, Dropdown ---
         col_search, col_yield, col_entries = st.columns([2, 1, 1])
         with col_search:
             search_query = st.text_input("🔍 Search Company Name or Symbol:", "").lower()
         with col_yield:
             min_yield = st.number_input("Min Yield (%)", min_value=0.0, max_value=30.0, value=5.0, step=0.5)
         with col_entries:
-            # Dropdown to select how many entries to show
-            num_entries = st.selectbox("Entries to display:", options=[10, 20, 50, 100], index=2) # Default to 50
+            num_entries = st.selectbox("Entries to display:", options=[10, 20, 50, 100], index=2) 
             
         st.divider()
 
-        # --- Calculate Yields dynamically for filtered data ---
-        # We calculate yield here to save time, only doing it for the displayed entries
         screener_data = []
         with st.spinner("Analyzing dividend yields..."):
             for index, row in market_df.iterrows():
@@ -215,13 +207,11 @@ if not market_df.empty:
                 name = row['Company Name']
                 price = row['Current Price']
                 
-                # Apply text search filter
                 if search_query and (search_query not in symbol.lower() and search_query not in name.lower()):
                     continue
                 
                 yield_pct = get_dividend_yield(symbol, price)
                 
-                # Apply yield filter
                 if yield_pct >= min_yield:
                     screener_data.append({
                         "Symbol": symbol,
@@ -232,12 +222,9 @@ if not market_df.empty:
                     
         screener_df = pd.DataFrame(screener_data)
         
-        # --- Display Screener Results ---
         if not screener_df.empty:
-            # Sort by yield and limit to the requested number of entries
             display_df = screener_df.sort_values("Yield (%)", ascending=False).head(num_entries)
             
-            # Export to Excel Button
             excel_data_1 = convert_df_to_excel(display_df)
             st.download_button(
                 label="📥 Export Screener Results to Excel",
@@ -257,7 +244,6 @@ if not market_df.empty:
                 }
             )
             
-            # --- Historical Deep Dive ---
             st.subheader("📜 Detailed Dividend History")
             display_df["Dropdown"] = display_df["Symbol"] + " - " + display_df["Company Name"]
             selected_display = st.selectbox("Select a stock to view its complete payout history:", options=display_df["Dropdown"].tolist(), index=None)
@@ -300,7 +286,6 @@ if not market_df.empty:
         st.header("Full Market Overview")
         st.caption("Live prices, daily highs, lows, and 24-hour changes for tracked companies.")
         
-        # Color coding for positive/negative change
         def style_change(val):
             color = 'green' if val > 0 else 'red' if val < 0 else 'gray'
             return f'color: {color}'
@@ -313,8 +298,7 @@ if not market_df.empty:
             "Change (%)": "{:+.2f}%"
         })
 
-        # Export Full Market to Excel
-        excel_data_2 = convert_df_to_excel(market_df) # Export raw DF, not styled
+        excel_data_2 = convert_df_to_excel(market_df)
         st.download_button(
             label="📥 Export Full Market Data to Excel",
             data=excel_data_2,
