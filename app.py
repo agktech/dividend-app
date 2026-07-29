@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 import plotly.express as px
-import requests
+from curl_cffi import requests
 from datetime import datetime
 import pytz
 import warnings
@@ -15,7 +15,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 # 1. PAGE CONFIGURATION & STYLING
 # -----------------------------------------------------------------------------
 st.set_page_config(
-    page_title="Dividend Scout Pro",
+    page_title="PSX Market & Dividend Scout",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -35,7 +35,7 @@ st.markdown("""
     .time-display {
         font-size: 1.1rem;
         font-weight: 500;
-        color: #4A4A4A;
+        color: #888888;
         margin-bottom: 20px;
     }
 </style>
@@ -52,7 +52,6 @@ def get_current_pkt_time():
 def convert_df_to_excel(df):
     """Converts a pandas dataframe to an Excel file object in memory."""
     output = io.BytesIO()
-    # Using openpyxl as the engine since it is standard for Pandas Excel export
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df.to_excel(writer, index=False, sheet_name='Sheet1')
     return output.getvalue()
@@ -94,17 +93,20 @@ PSX_TICKERS = {
 }
 
 # -----------------------------------------------------------------------------
-# 4. DIRECT API DATA FETCHING (Works 24/7)
+# 4. DIRECT API DATA FETCHING (Bypasses Cloudflare via curl_cffi)
 # -----------------------------------------------------------------------------
 @st.cache_data(ttl=900, show_spinner=False)
 def fetch_psx_market_data():
     """
-    Fetches live market data from PSX API, including high, low, and change.
-    Returns a processed dataframe.
+    Fetches live market data from PSX API, bypassing Cloudflare anti-bot blocks
+    by impersonating a real browser TLS fingerprint.
     """
     try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        response = requests.get("https://dps.psx.com.pk/api/marketData", headers=headers, timeout=10)
+        response = requests.get(
+            "https://dps.psx.com.pk/api/marketData",
+            impersonate="chrome110",
+            timeout=10
+        )
         
         if response.status_code == 200:
             raw_data = response.json()
@@ -196,7 +198,7 @@ if not market_df.empty:
         with col_yield:
             min_yield = st.number_input("Min Yield (%)", min_value=0.0, max_value=30.0, value=5.0, step=0.5)
         with col_entries:
-            num_entries = st.selectbox("Entries to display:", options=[10, 20, 50, 100], index=2) 
+            num_entries = st.selectbox("Entries to display:", options=[10, 20, 50, 100], index=2)
             
         st.divider()
 
