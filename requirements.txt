@@ -2,8 +2,6 @@ streamlit
 pandas
 yfinance
 plotly
-curl_cffi
+psxdata
 pytz
 openpyxl
-
-
