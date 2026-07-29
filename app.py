@@ -3,8 +3,10 @@ import pandas as pd
 import yfinance as yf
 import plotly.express as px
 import requests
-import datetime
+from datetime import datetime
+import pytz
 import warnings
+import io
 
 # Suppress yfinance timezone warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -21,7 +23,7 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-    .main .block-container { padding-top: 2rem; padding-bottom: 2rem; }
+    .main .block-container { padding-top: 1rem; padding-bottom: 2rem; }
     h1, h2, h3 { font-family: 'Helvetica Neue', sans-serif; color: #1E1E1E; }
     .stDataFrame { font-size: 0.95rem; }
     [data-testid="stMetric"] {
@@ -30,39 +32,35 @@ st.markdown("""
         padding: 1rem;
         border: 1px solid #e9ecef;
     }
+    .time-display {
+        font-size: 1.1rem;
+        font-weight: 500;
+        color: #4A4A4A;
+        margin-bottom: 20px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📈 Dividend Scout Pro")
-st.caption("Robust Screener for High-Yield Dividend Stocks (Works 24/7)")
+# -----------------------------------------------------------------------------
+# 2. HELPER FUNCTIONS (Time & Export)
+# -----------------------------------------------------------------------------
+def get_current_pkt_time():
+    """Returns formatted current time in Pakistan Standard Time (PKT)."""
+    tz = pytz.timezone('Asia/Karachi')
+    return datetime.now(tz).strftime('%A, %B %d, %Y at %I:%M:%S %p PKT')
+
+def convert_df_to_excel(df):
+    """Converts a pandas dataframe to an Excel file object in memory."""
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        df.to_excel(writer, index=False, sheet_name='Sheet1')
+    return output.getvalue()
 
 # -----------------------------------------------------------------------------
-# 2. STATE MANAGEMENT & SIDEBAR
+# 3. ROBUST TICKER DICTIONARY (PSX ONLY)
 # -----------------------------------------------------------------------------
-if 'display_count' not in st.session_state:
-    st.session_state.display_count = 20
-if 'last_market' not in st.session_state:
-    st.session_state.last_market = None
-
-with st.sidebar:
-    st.header("🔍 Screener Settings")
-    market_choice = st.radio("Select Market:", ["🇵🇰 Pakistan (PSX)", "🌎 Global (US Major)"], index=0)
-    
-    if st.session_state.last_market != market_choice:
-        st.session_state.display_count = 20
-        st.session_state.last_market = market_choice
-
-    st.divider()
-    min_yield = st.slider("Minimum Annual Yield (%)", 0.0, 30.0, 5.0, 0.5)
-
-is_psx = "Pakistan" in market_choice
-currency_symbol = "PKR" if is_psx else "USD"
-
-# -----------------------------------------------------------------------------
-# 3. ROBUST TICKER DICTIONARIES
-# -----------------------------------------------------------------------------
-# Using a highly accurate curated list of top PSX dividend payers to guarantee 
-# functionality without relying on flaky third-party scraping libraries.
+# Since you requested specific PSX data points (High, Low, 24h Change) and 
+# the focus is now on the PSX, we will enforce the Pakistan market context.
 PSX_TICKERS = {
     "HUBC": "Hub Power Company", "EFERT": "Engro Fertilizers", 
     "FFC": "Fauji Fertilizer Company", "ENGRO": "Engro Corporation",
@@ -75,202 +73,261 @@ PSX_TICKERS = {
     "MTL": "Millat Tractors Limited", "BAFL": "Bank Alfalah Limited",
     "BAHL": "Bank AL Habib Limited", "BOP": "The Bank of Punjab",
     "LOTCHEM": "Lotte Chemical Pakistan", "FCCL": "Fauji Cement Company",
-    "NATF": "National Foods", "EFOODS": "Engro Foods (FrieslandCampina)"
+    "NATF": "National Foods", "EFOODS": "Engro Foods (FrieslandCampina)",
+    "TRG": "TRG Pakistan", "INIL": "International Industries",
+    "ISL": "International Steels", "DGKC": "DG Khan Cement",
+    "CHCC": "Cherat Cement", "MLCF": "Maple Leaf Cement",
+    "PIOC": "Pioneer Cement", "FABL": "Faysal Bank Limited",
+    "AKBL": "Askari Bank Limited", "SNGP": "Sui Northern Gas",
+    "SSGC": "Sui Southern Gas", "NRL": "National Refinery",
+    "PRL": "Pakistan Refinery", "ATRL": "Attock Refinery",
+    "APL": "Attock Petroleum", "HASCOL": "Hascol Petroleum",
+    "SEARL": "The Searle Company", "AGP": "AGP Limited",
+    "ABOT": "Abbott Laboratories", "GLAXO": "GlaxoSmithKline",
+    "NESTLE": "Nestle Pakistan", "PAEL": "Pak Elektron Limited",
+    "KEL": "K-Electric Limited", "SAZEW": "Sazgar Engineering",
+    "HCAR": "Honda Atlas Cars", "INDU": "Indus Motor Company",
+    "PSMC": "Pak Suzuki Motor", "GTYR": "General Tyre",
+    "AVN": "Avanceon Limited", "NETSOL": "NetSol Technologies",
+    "EPCL": "Engro Polymer", "ICI": "ICI Pakistan",
+    "BATM": "Bata Pakistan", "SRVI": "Service Industries",
+    "NML": "Nishat Mills", "GATM": "Gul Ahmed Textile"
 }
 
-GLOBAL_TICKERS = {
-    "T": "AT&T Inc.", "VZ": "Verizon Communications", "KO": "The Coca-Cola Company", 
-    "JNJ": "Johnson & Johnson", "PG": "Procter & Gamble", "XOM": "Exxon Mobil Corp",
-    "CVX": "Chevron Corp", "PFE": "Pfizer Inc.", "ABBV": "AbbVie Inc.", 
-    "PEP": "PepsiCo, Inc.", "MO": "Altria Group", "PM": "Philip Morris International",
-    "O": "Realty Income Corp", "MAIN": "Main Street Capital"
-}
-
-active_tickers = PSX_TICKERS if is_psx else GLOBAL_TICKERS
-current_batch = dict(list(active_tickers.items())[:st.session_state.display_count])
-
 # -----------------------------------------------------------------------------
-# 4. DIRECT API DATA FETCHING (The Fix for Closed Markets)
+# 4. DIRECT API DATA FETCHING (Works 24/7)
 # -----------------------------------------------------------------------------
-@st.cache_data(ttl=1800, show_spinner=False)
-def fetch_psx_prices():
-    """Fetches the last known closing prices directly from the PSX API."""
+@st.cache_data(ttl=900, show_spinner=False) # Cache for 15 mins to reduce API load
+def fetch_psx_market_data():
+    """
+    Fetches live market data from PSX API, including high, low, and change.
+    Returns a processed dataframe.
+    """
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
         response = requests.get("https://dps.psx.com.pk/api/marketData", headers=headers, timeout=10)
+        
         if response.status_code == 200:
-            return {item['symbol']: float(item.get('price', 0)) for item in response.json()}
-    except Exception:
-        pass
-    return {}
+            raw_data = response.json()
+            processed_data = []
+            
+            for item in raw_data:
+                symbol = item.get('symbol')
+                if symbol in PSX_TICKERS:
+                    # Extract values, defaulting to 0 if missing
+                    current_price = float(item.get('price', 0))
+                    high_price = float(item.get('high', 0))
+                    low_price = float(item.get('low', 0))
+                    change = float(item.get('change', 0))
+                    
+                    # Calculate percentage change
+                    if current_price - change != 0:
+                        change_percent = (change / (current_price - change)) * 100
+                    else:
+                        change_percent = 0.0
+
+                    processed_data.append({
+                        "Symbol": symbol,
+                        "Company Name": PSX_TICKERS[symbol],
+                        "Current Price": current_price,
+                        "High": high_price,
+                        "Low": low_price,
+                        "Change (PKR)": change,
+                        "Change (%)": round(change_percent, 2)
+                    })
+            
+            return pd.DataFrame(processed_data)
+    except Exception as e:
+        st.error(f"Failed to connect to PSX API: {e}")
+    
+    return pd.DataFrame() # Return empty df on failure
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def run_screener(ticker_batch, is_psx_market):
-    results = []
+def get_dividend_yield(symbol, current_price):
+    """Calculates manual trailing dividend yield using yfinance."""
+    if current_price <= 0: return 0.0
     
-    psx_live_prices = fetch_psx_prices() if is_psx_market else {}
+    yf_symbol = f"{symbol}.KA"
     one_year_ago = pd.Timestamp.now(tz='UTC') - pd.DateOffset(years=1)
-
-    with st.spinner("Analyzing dividend histories and calculating yields..."):
-        for symbol, name in ticker_batch.items():
-            yf_symbol = f"{symbol}.KA" if is_psx_market else symbol
-            
-            try:
-                stock = yf.Ticker(yf_symbol)
-                
-                # 1. Determine Price (PSX API takes priority, fallback to YF)
-                current_price = 0.0
-                if is_psx_market and symbol in psx_live_prices and psx_live_prices[symbol] > 0:
-                    current_price = psx_live_prices[symbol]
-                else:
-                    # YF fallback: gets last close even if market is closed
-                    hist = stock.history(period="5d")
-                    if not hist.empty:
-                        current_price = hist["Close"].iloc[-1]
-
-                if current_price <= 0:
-                    continue # Skip if we can't find a valid price
-
-                # 2. Calculate Exact Trailing Dividend Yield manually
-                yield_decimal = 0.0
-                div_history = stock.dividends
-                
-                if not div_history.empty:
-                    # Convert timezone to UTC for safe comparison
-                    if div_history.index.tz is None:
-                        div_history.index = div_history.index.tz_localize('UTC')
-                    else:
-                        div_history.index = div_history.index.tz_convert('UTC')
-                        
-                    # Sum all dividends from the last 365 days
-                    recent_divs = div_history[div_history.index >= one_year_ago]
-                    annual_payout = recent_divs.sum()
-                    
-                    if annual_payout > 0:
-                        yield_decimal = annual_payout / current_price
-
-                # Fallback to Yahoo's recorded yield for Global stocks if manual calc is 0
-                if yield_decimal == 0 and not is_psx_market:
-                    info_yield = stock.info.get("trailingAnnualDividendYield")
-                    if info_yield:
-                        yield_decimal = info_yield
-
-                results.append({
-                    "Symbol": symbol,
-                    "yf_ticker": yf_symbol,
-                    "Company Name": name,
-                    "Price": current_price,
-                    "Yield (%)": round(yield_decimal * 100, 2),
-                    "Status": "Active"
-                })
-                
-            except Exception:
-                pass # Skip problematic tickers silently to prevent app crashes
-                
-    return pd.DataFrame(results)
-
-# Execute Screener
-df = run_screener(current_batch, is_psx)
-
-# -----------------------------------------------------------------------------
-# 5. DASHBOARD UI & FILTERING
-# -----------------------------------------------------------------------------
-st.divider()
-
-if not df.empty:
-    filtered_df = df[df["Yield (%)"] >= min_yield].sort_values("Yield (%)", ascending=False)
-else:
-    filtered_df = pd.DataFrame()
-
-st.header(f"🎯 Screener Results")
-st.caption(f"Analyzing {len(current_batch)} of {len(active_tickers)} database records. Showing active stocks with ≥ {min_yield}% yield.")
-
-if filtered_df.empty:
-    st.warning("No stocks match the current filter criteria. Try adjusting the yield slider or loading more data.")
-else:
-    # Display main dataframe
-    st.dataframe(
-        filtered_df[["Symbol", "Company Name", "Price", "Yield (%)"]],
-        hide_index=True,
-        use_container_width=True,
-        column_config={
-            "Price": st.column_config.NumberColumn("Price", format=f"{currency_symbol} %.2f"),
-            "Yield (%)": st.column_config.ProgressColumn("Annual Yield", format="%.2f%%", min_value=0, max_value=max(filtered_df["Yield (%)"].max(), 0.1))
-        }
-    )
-
-# Pagination / Load More
-st.markdown("<br>", unsafe_allow_html=True)
-col1, col2, col3 = st.columns([1, 2, 1])
-with col2:
-    if st.session_state.display_count < len(active_tickers):
-        if st.button("🔄 Load More Companies", use_container_width=True, type="primary"):
-            st.session_state.display_count += 20
-            st.rerun()
-
-# -----------------------------------------------------------------------------
-# 6. HISTORICAL PAYOUT ANALYSIS
-# -----------------------------------------------------------------------------
-st.divider()
-st.header("📜 Detailed Dividend History")
-
-if not filtered_df.empty:
-    # Prepare dropdown options
-    filtered_df["Dropdown"] = filtered_df["Symbol"] + " - " + filtered_df["Company Name"]
-    option_map = dict(zip(filtered_df["Dropdown"], filtered_df["yf_ticker"]))
     
-    selected_display = st.selectbox(
-        "Select a stock to view its complete payout history:",
-        options=list(option_map.keys()),
-        index=None,
-        placeholder="Choose a company..."
-    )
-
-    if selected_display:
-        yf_target = option_map[selected_display]
-        target_data = filtered_df[filtered_df["Dropdown"] == selected_display].iloc[0]
-        
-        # Display Metrics
-        m1, m2 = st.columns(2)
-        m1.metric("Latest Closing Price", f"{currency_symbol} {target_data['Price']:,.2f}")
-        m2.metric("Calculated Trailing Yield", f"{target_data['Yield (%)']:.2f}%")
-
-        # Fetch and process dividend history
-        stock_obj = yf.Ticker(yf_target)
-        div_history = stock_obj.dividends
+    try:
+        stock = yf.Ticker(yf_symbol)
+        div_history = stock.dividends
         
         if not div_history.empty:
-            # Format dataframe
-            div_df = pd.DataFrame(div_history).reset_index()
-            div_df.columns = ["Date", "Amount"]
-            # Strip timezone for cleaner display
-            div_df["Date"] = pd.to_datetime(div_df["Date"]).dt.tz_localize(None).dt.date
-            div_df = div_df.sort_values(by="Date", ascending=False).reset_index(drop=True)
-            
-            tab1, tab2 = st.tabs(["📊 Payout Timeline", "📄 Raw Data Log"])
-            
-            with tab1:
-                fig = px.bar(
-                    div_df.head(40), # Show last 40 payouts visually
-                    x="Date", 
-                    y="Amount", 
-                    labels={"Date": "Payout Date", "Amount": f"Dividend ({currency_symbol})"},
-                    color_discrete_sequence=["#1b9e77"]
-                )
-                fig.update_layout(plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
-                st.plotly_chart(fig, use_container_width=True)
+            if div_history.index.tz is None:
+                div_history.index = div_history.index.tz_localize('UTC')
+            else:
+                div_history.index = div_history.index.tz_convert('UTC')
                 
-            with tab2:
-                st.dataframe(
-                    div_df, 
-                    use_container_width=True, 
-                    hide_index=True, 
-                    height=350,
-                    column_config={
-                        "Amount": st.column_config.NumberColumn(f"Amount ({currency_symbol})", format="%.2f")
-                    }
-                )
+            recent_divs = div_history[div_history.index >= one_year_ago]
+            annual_payout = recent_divs.sum()
+            
+            if annual_payout > 0:
+                return (annual_payout / current_price) * 100
+    except Exception:
+        pass
+    
+    return 0.0
+
+# -----------------------------------------------------------------------------
+# 5. HEADER & CLOCK
+# -----------------------------------------------------------------------------
+st.title("📈 PSX Market & Dividend Scout")
+st.markdown(f"<div class='time-display'>🕒 {get_current_pkt_time()}</div>", unsafe_allow_html=True)
+
+# -----------------------------------------------------------------------------
+# 6. MAIN DATA LOADING
+# -----------------------------------------------------------------------------
+# Fetch the master dataframe containing all live prices, highs, lows, etc.
+market_df = fetch_psx_market_data()
+
+# -----------------------------------------------------------------------------
+# 7. TABBED INTERFACE
+# -----------------------------------------------------------------------------
+if not market_df.empty:
+    tab1, tab2 = st.tabs(["📊 Dividend Screener & History", "🏛️ Full Market Overview"])
+    
+    # =========================================================================
+    # TAB 1: DIVIDEND SCREENER & HISTORY (With Search & Dropdown)
+    # =========================================================================
+    with tab1:
+        st.header("Dividend Screener")
+        
+        # --- Controls: Search, Filter, Dropdown ---
+        col_search, col_yield, col_entries = st.columns([2, 1, 1])
+        with col_search:
+            search_query = st.text_input("🔍 Search Company Name or Symbol:", "").lower()
+        with col_yield:
+            min_yield = st.number_input("Min Yield (%)", min_value=0.0, max_value=30.0, value=5.0, step=0.5)
+        with col_entries:
+            # Dropdown to select how many entries to show
+            num_entries = st.selectbox("Entries to display:", options=[10, 20, 50, 100], index=2) # Default to 50
+            
+        st.divider()
+
+        # --- Calculate Yields dynamically for filtered data ---
+        # We calculate yield here to save time, only doing it for the displayed entries
+        screener_data = []
+        with st.spinner("Analyzing dividend yields..."):
+            for index, row in market_df.iterrows():
+                symbol = row['Symbol']
+                name = row['Company Name']
+                price = row['Current Price']
+                
+                # Apply text search filter
+                if search_query and (search_query not in symbol.lower() and search_query not in name.lower()):
+                    continue
+                
+                yield_pct = get_dividend_yield(symbol, price)
+                
+                # Apply yield filter
+                if yield_pct >= min_yield:
+                    screener_data.append({
+                        "Symbol": symbol,
+                        "Company Name": name,
+                        "Price": price,
+                        "Yield (%)": round(yield_pct, 2)
+                    })
+                    
+        screener_df = pd.DataFrame(screener_data)
+        
+        # --- Display Screener Results ---
+        if not screener_df.empty:
+            # Sort by yield and limit to the requested number of entries
+            display_df = screener_df.sort_values("Yield (%)", ascending=False).head(num_entries)
+            
+            # Export to Excel Button
+            excel_data_1 = convert_df_to_excel(display_df)
+            st.download_button(
+                label="📥 Export Screener Results to Excel",
+                data=excel_data_1,
+                file_name=f"PSX_Dividend_Screen_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+            
+            st.dataframe(
+                display_df,
+                hide_index=True,
+                use_container_width=True,
+                height=400,
+                column_config={
+                    "Price": st.column_config.NumberColumn("Price (PKR)", format="%.2f"),
+                    "Yield (%)": st.column_config.ProgressColumn("Annual Yield", format="%.2f%%", min_value=0, max_value=max(display_df["Yield (%)"].max(), 0.1))
+                }
+            )
+            
+            # --- Historical Deep Dive ---
+            st.subheader("📜 Detailed Dividend History")
+            display_df["Dropdown"] = display_df["Symbol"] + " - " + display_df["Company Name"]
+            selected_display = st.selectbox("Select a stock to view its complete payout history:", options=display_df["Dropdown"].tolist(), index=None)
+
+            if selected_display:
+                selected_symbol = selected_display.split(" - ")[0]
+                yf_target = f"{selected_symbol}.KA"
+                target_data = display_df[display_df["Dropdown"] == selected_display].iloc[0]
+                
+                m1, m2 = st.columns(2)
+                m1.metric("Latest Closing Price", f"PKR {target_data['Price']:,.2f}")
+                m2.metric("Calculated Trailing Yield", f"{target_data['Yield (%)']:.2f}%")
+
+                stock_obj = yf.Ticker(yf_target)
+                div_history = stock_obj.dividends
+                
+                if not div_history.empty:
+                    div_df = pd.DataFrame(div_history).reset_index()
+                    div_df.columns = ["Date", "Amount"]
+                    div_df["Date"] = pd.to_datetime(div_df["Date"]).dt.tz_localize(None).dt.date
+                    div_df = div_df.sort_values(by="Date", ascending=False).reset_index(drop=True)
+                    
+                    tab_chart, tab_log = st.tabs(["📊 Payout Timeline", "📄 Raw Data Log"])
+                    
+                    with tab_chart:
+                        fig = px.bar(div_df.head(40), x="Date", y="Amount", labels={"Date": "Payout Date", "Amount": "Dividend (PKR)"}, color_discrete_sequence=["#1b9e77"])
+                        st.plotly_chart(fig, use_container_width=True)
+                        
+                    with tab_log:
+                        st.dataframe(div_df, use_container_width=True, hide_index=True, height=350)
+                else:
+                    st.info("Dividend records are not available for this entity.")
         else:
-            st.info("Dividend records are not available for this entity in the global database.")
+            st.warning("No stocks match the current search or filter criteria.")
+
+    # =========================================================================
+    # TAB 2: FULL MARKET OVERVIEW (High, Low, Change)
+    # =========================================================================
+    with tab2:
+        st.header("Full Market Overview")
+        st.caption("Live prices, daily highs, lows, and 24-hour changes for tracked companies.")
+        
+        # Color coding for positive/negative change
+        def style_change(val):
+            color = 'green' if val > 0 else 'red' if val < 0 else 'gray'
+            return f'color: {color}'
+
+        styled_market_df = market_df.style.map(style_change, subset=['Change (PKR)', 'Change (%)']).format({
+            "Current Price": "{:.2f}",
+            "High": "{:.2f}",
+            "Low": "{:.2f}",
+            "Change (PKR)": "{:+.2f}",
+            "Change (%)": "{:+.2f}%"
+        })
+
+        # Export Full Market to Excel
+        excel_data_2 = convert_df_to_excel(market_df) # Export raw DF, not styled
+        st.download_button(
+            label="📥 Export Full Market Data to Excel",
+            data=excel_data_2,
+            file_name=f"PSX_Market_Data_{datetime.now().strftime('%Y%m%d')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+        st.dataframe(
+            styled_market_df,
+            hide_index=True,
+            use_container_width=True,
+            height=600
+        )
+
 else:
-    st.info("Find a stock using the screener above to view its history here.")
+    st.error("Unable to load market data. Please check your internet connection or try again later.")
