@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 import plotly.express as px
-from curl_cffi import requests
+import psxdata
 from datetime import datetime
 import pytz
 import warnings
@@ -57,87 +57,64 @@ def convert_df_to_excel(df):
     return output.getvalue()
 
 # -----------------------------------------------------------------------------
-# 3. ROBUST TICKER DICTIONARY (PSX ONLY)
-# -----------------------------------------------------------------------------
-PSX_TICKERS = {
-    "HUBC": "Hub Power Company", "EFERT": "Engro Fertilizers", 
-    "FFC": "Fauji Fertilizer Company", "ENGRO": "Engro Corporation",
-    "MEBL": "Meezan Bank Limited", "UBL": "United Bank Limited", 
-    "MCB": "MCB Bank Limited", "HBL": "Habib Bank Limited",
-    "OGDC": "Oil & Gas Development Co", "PPL": "Pakistan Petroleum Ltd",
-    "POL": "Pakistan Oilfields Ltd", "MARI": "Mari Petroleum Company",
-    "LUCK": "Lucky Cement Limited", "SYS": "Systems Limited", 
-    "PSO": "Pakistan State Oil", "KAPCO": "Kot Addu Power Company", 
-    "MTL": "Millat Tractors Limited", "BAFL": "Bank Alfalah Limited",
-    "BAHL": "Bank AL Habib Limited", "BOP": "The Bank of Punjab",
-    "LOTCHEM": "Lotte Chemical Pakistan", "FCCL": "Fauji Cement Company",
-    "NATF": "National Foods", "EFOODS": "Engro Foods (FrieslandCampina)",
-    "TRG": "TRG Pakistan", "INIL": "International Industries",
-    "ISL": "International Steels", "DGKC": "DG Khan Cement",
-    "CHCC": "Cherat Cement", "MLCF": "Maple Leaf Cement",
-    "PIOC": "Pioneer Cement", "FABL": "Faysal Bank Limited",
-    "AKBL": "Askari Bank Limited", "SNGP": "Sui Northern Gas",
-    "SSGC": "Sui Southern Gas", "NRL": "National Refinery",
-    "PRL": "Pakistan Refinery", "ATRL": "Attock Refinery",
-    "APL": "Attock Petroleum", "HASCOL": "Hascol Petroleum",
-    "SEARL": "The Searle Company", "AGP": "AGP Limited",
-    "ABOT": "Abbott Laboratories", "GLAXO": "GlaxoSmithKline",
-    "NESTLE": "Nestle Pakistan", "PAEL": "Pak Elektron Limited",
-    "KEL": "K-Electric Limited", "SAZEW": "Sazgar Engineering",
-    "HCAR": "Honda Atlas Cars", "INDU": "Indus Motor Company",
-    "PSMC": "Pak Suzuki Motor", "GTYR": "General Tyre",
-    "AVN": "Avanceon Limited", "NETSOL": "NetSol Technologies",
-    "EPCL": "Engro Polymer", "ICI": "ICI Pakistan",
-    "BATM": "Bata Pakistan", "SRVI": "Service Industries",
-    "NML": "Nishat Mills", "GATM": "Gul Ahmed Textile"
-}
-
-# -----------------------------------------------------------------------------
-# 4. DIRECT API DATA FETCHING (Bypasses Cloudflare via curl_cffi)
+# 3. DIRECT API DATA FETCHING (Using psxdata library)
 # -----------------------------------------------------------------------------
 @st.cache_data(ttl=900, show_spinner=False)
 def fetch_psx_market_data():
     """
-    Fetches live market data from PSX API, bypassing Cloudflare anti-bot blocks
-    by impersonating a real browser TLS fingerprint.
+    Fetches live market data using the robust psxdata library.
     """
+    processed_data = []
+    
     try:
-        response = requests.get(
-            "https://dps.psx.com.pk/api/marketData",
-            impersonate="chrome110",
-            timeout=10
-        )
+        # Fetch the official ticker list directly from PSX via psxdata
+        tickers_df = psxdata.tickers()
         
-        if response.status_code == 200:
-            raw_data = response.json()
-            processed_data = []
-            
-            for item in raw_data:
-                symbol = item.get('symbol')
-                if symbol in PSX_TICKERS:
-                    current_price = float(item.get('price', 0))
-                    high_price = float(item.get('high', 0))
-                    low_price = float(item.get('low', 0))
-                    change = float(item.get('change', 0))
-                    
-                    if current_price - change != 0:
-                        change_percent = (change / (current_price - change)) * 100
-                    else:
-                        change_percent = 0.0
+        # We will loop through a curated list of top dividend payers to keep the app fast
+        top_dividend_tickers = [
+            "HUBC", "EFERT", "FFC", "ENGRO", "MEBL", "UBL", "MCB", "HBL",
+            "OGDC", "PPL", "POL", "MARI", "LUCK", "SYS", "PSO", "KAPCO",
+            "MTL", "BAFL", "BAHL", "BOP", "LOTCHEM", "FCCL", "NATF", "TRG"
+        ]
+        
+        for symbol in top_dividend_tickers:
+            try:
+                # psxdata.quote() gets the live quote row for a ticker
+                quote_data = psxdata.quote(symbol) 
+                
+                # Fetch company name from our tickers list if available, else use symbol
+                company_name = symbol
+                if symbol in tickers_df.index:
+                     company_name = tickers_df.loc[symbol].get('Name', symbol)
+                
+                # Extract values from the quote object
+                current_price = float(quote_data.get('Current', 0))
+                high_price = float(quote_data.get('High', 0))
+                low_price = float(quote_data.get('Low', 0))
+                change = float(quote_data.get('Change', 0))
+                
+                if current_price - change != 0:
+                    change_percent = (change / (current_price - change)) * 100
+                else:
+                    change_percent = 0.0
 
-                    processed_data.append({
-                        "Symbol": symbol,
-                        "Company Name": PSX_TICKERS[symbol],
-                        "Current Price": current_price,
-                        "High": high_price,
-                        "Low": low_price,
-                        "Change (PKR)": change,
-                        "Change (%)": round(change_percent, 2)
-                    })
-            
-            return pd.DataFrame(processed_data)
+                processed_data.append({
+                    "Symbol": symbol,
+                    "Company Name": company_name,
+                    "Current Price": current_price,
+                    "High": high_price,
+                    "Low": low_price,
+                    "Change (PKR)": change,
+                    "Change (%)": round(change_percent, 2)
+                })
+            except Exception as e:
+                # Silently skip individual failed tickers so the whole app doesn't crash
+                continue
+                
+        return pd.DataFrame(processed_data)
+        
     except Exception as e:
-        st.error(f"Failed to connect to PSX API: {e}")
+        st.error(f"Failed to connect to PSX database: {e}")
     
     return pd.DataFrame()
 
@@ -170,24 +147,24 @@ def get_dividend_yield(symbol, current_price):
     return 0.0
 
 # -----------------------------------------------------------------------------
-# 5. HEADER & CLOCK
+# 4. HEADER & CLOCK
 # -----------------------------------------------------------------------------
 st.title("📈 PSX Market & Dividend Scout")
 st.markdown(f"<div class='time-display'>🕒 {get_current_pkt_time()}</div>", unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
-# 6. MAIN DATA LOADING
+# 5. MAIN DATA LOADING
 # -----------------------------------------------------------------------------
 market_df = fetch_psx_market_data()
 
 # -----------------------------------------------------------------------------
-# 7. TABBED INTERFACE
+# 6. TABBED INTERFACE
 # -----------------------------------------------------------------------------
 if not market_df.empty:
     tab1, tab2 = st.tabs(["📊 Dividend Screener & History", "🏛️ Full Market Overview"])
     
     # =========================================================================
-    # TAB 1: DIVIDEND SCREENER & HISTORY (With Search & Dropdown)
+    # TAB 1: DIVIDEND SCREENER
     # =========================================================================
     with tab1:
         st.header("Dividend Screener")
@@ -209,7 +186,7 @@ if not market_df.empty:
                 name = row['Company Name']
                 price = row['Current Price']
                 
-                if search_query and (search_query not in symbol.lower() and search_query not in name.lower()):
+                if search_query and (search_query not in symbol.lower() and search_query not in str(name).lower()):
                     continue
                 
                 yield_pct = get_dividend_yield(symbol, price)
@@ -247,7 +224,7 @@ if not market_df.empty:
             )
             
             st.subheader("📜 Detailed Dividend History")
-            display_df["Dropdown"] = display_df["Symbol"] + " - " + display_df["Company Name"]
+            display_df["Dropdown"] = display_df["Symbol"] + " - " + display_df["Company Name"].astype(str)
             selected_display = st.selectbox("Select a stock to view its complete payout history:", options=display_df["Dropdown"].tolist(), index=None)
 
             if selected_display:
@@ -282,7 +259,7 @@ if not market_df.empty:
             st.warning("No stocks match the current search or filter criteria.")
 
     # =========================================================================
-    # TAB 2: FULL MARKET OVERVIEW (High, Low, Change)
+    # TAB 2: FULL MARKET OVERVIEW
     # =========================================================================
     with tab2:
         st.header("Full Market Overview")
@@ -316,4 +293,4 @@ if not market_df.empty:
         )
 
 else:
-    st.error("Unable to load market data. Please check your internet connection or try again later.")
+    st.error("Unable to load market data. The PSX servers might be experiencing high traffic or blocking our Cloud IP. Please try again later.")
