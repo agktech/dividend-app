@@ -1,8 +1,9 @@
-
 import streamlit as st
 import pandas as pd
 import yfinance as yf
 import plotly.express as px
+import requests
+from bs4 import BeautifulSoup
 from psx import tickers as psx_tickers
 
 # -----------------------------------------------------------------------------
@@ -58,9 +59,6 @@ with st.sidebar:
     st.divider()
     st.subheader("Filters")
     min_yield = st.slider("Minimum Annual Yield (%)", 0.0, 25.0, 5.0, 0.5, "%d%%")
-    st.divider()
-    if "Pakistan" in market_choice:
-        st.info("💡 **PSX Note:** Data is fetched via Yahoo Finance using '.KA' suffix.")
 
 # -----------------------------------------------------------------------------
 # 4. DATA ACQUISITION (Robust Fallback Logic)
@@ -92,7 +90,6 @@ def get_psx_tickers_map():
     psx_dict = {}
     data_source = "live"
     try:
-        # Attempt live fetch
         tickers_df = psx_tickers()
         if tickers_df.empty: raise ValueError("Empty live list returned")
              
@@ -101,12 +98,10 @@ def get_psx_tickers_map():
             company_name = str(row.get('Name', symbol)).strip()
             psx_dict[yf_symbol] = company_name
             
-        # If live list is too small (indicating an issue), merge with fallback
         if len(psx_dict) < 50:
              psx_dict.update(PSX_FALLBACK_TICKERS)
              data_source = "hybrid"
     except Exception:
-        # On any error, immediately switch to full fallback list
         psx_dict = PSX_FALLBACK_TICKERS
         data_source = "fallback"
         
@@ -120,12 +115,13 @@ GLOBAL_TICKERS = {
     "O": "Realty Income Corp", "MAIN": "Main Street Capital", "IRM": "Iron Mountain"
 }
 
-# --- MARKET CONTEXT SETUP & SLICING ---
-if "Pakistan" in market_choice:
+# --- MARKET CONTEXT SETUP ---
+is_psx = "Pakistan" in market_choice
+
+if is_psx:
     full_ticker_map, source_status = get_psx_tickers_map()
     currency_symbol = "PKR"
     market_name = "PSX"
-    # Inform user if fallback is active
     if source_status == "fallback": st.toast("Using curated PSX list due to API connectivity.", icon="ℹ️")
     elif source_status == "hybrid": st.toast("Using mixed live/curated PSX list.", icon="ℹ️")
 else:
@@ -139,59 +135,106 @@ current_batch_items = all_ticker_items[:st.session_state.display_count]
 current_ticker_map = dict(current_batch_items)
 
 # -----------------------------------------------------------------------------
-# 5. CORE SCREENER ENGINE (Cached based on batch size)
+# 5. CORE SCREENER ENGINE
 # -----------------------------------------------------------------------------
 @st.cache_data(ttl=3600, show_spinner=False)
 def run_screener(symbol_dict, market_context):
     results = []
-    total_in_batch = len(symbol_dict)
     
-    with st.spinner(f"Fetching data for {total_in_batch} companies from Yahoo Finance..."):
-        for i, (full_ticker, company_name) in enumerate(symbol_dict.items()):
+    # --- ROUTE A: PAKISTAN (DIRECT PSX API) ---
+    if market_context == "PSX":
+        with st.spinner("Fetching data directly from PSX..."):
             try:
-                stock = yf.Ticker(full_ticker)
-                history = stock.history(period="5d")
-                
-                if not history.empty:
-                    is_active = True
-                    current_price = history["Close"].iloc[-1]
-                    info = stock.info
-                    raw_yield = info.get("trailingAnnualDividendYield")
-                    yield_decimal = raw_yield if raw_yield is not None else 0.0
-                else:
-                    is_active = False
-                    current_price = 0.0
-                    yield_decimal = 0.0
+                # Fetch live market data to get accurate current prices
+                headers = {'User-Agent': 'Mozilla/5.0'}
+                response = requests.get("https://dps.psx.com.pk/api/marketData", headers=headers, timeout=10)
+                psx_live_data = []
+                if response.status_code == 200:
+                    psx_live_data = response.json()
 
-                results.append({
-                    "Symbol": full_ticker.replace(".KA", ""),
-                    "yf_ticker": full_ticker,
-                    "Company Name": company_name,
-                    "Price": current_price,
-                    "Yield Decimal": yield_decimal, 
-                    "is_active": is_active
-                })
-            except Exception:
-                pass
+                for full_ticker, company_name in symbol_dict.items():
+                    raw_symbol = full_ticker.replace(".KA", "")
+                    
+                    # 1. Get Live Price from PSX API
+                    stock_api_info = next((item for item in psx_live_data if item.get("symbol") == raw_symbol), None)
+                    current_price = float(stock_api_info.get("price", 0.0)) if stock_api_info else 0.0
+                    is_active = current_price > 0
+                    
+                    # 2. Get Historical Yield (Fallback to Yahoo if necessary, but price is PSX accurate)
+                    yield_decimal = 0.0
+                    try:
+                        # Attempt to get trailing yield from Yahoo Finance (still the best source for historic yields)
+                        info = yf.Ticker(full_ticker).info
+                        raw_yield = info.get("trailingAnnualDividendYield")
+                        if raw_yield:
+                            yield_decimal = raw_yield
+                    except Exception:
+                        pass
+                        
+                    results.append({
+                        "Symbol": raw_symbol,
+                        "yf_ticker": full_ticker,
+                        "Company Name": company_name,
+                        "Price": current_price,
+                        "Yield Decimal": yield_decimal,
+                        "is_active": is_active
+                    })
+                    
+            except Exception as e:
+                st.error(f"PSX API Connection Failed: {str(e)}")
+
+    # --- ROUTE B: GLOBAL (YAHOO FINANCE) ---
+    else:
+        total_in_batch = len(symbol_dict)
+        with st.spinner(f"Fetching data for {total_in_batch} companies from Yahoo Finance..."):
+            for i, (full_ticker, company_name) in enumerate(symbol_dict.items()):
+                try:
+                    stock = yf.Ticker(full_ticker)
+                    history = stock.history(period="5d")
+                    
+                    if not history.empty:
+                        is_active = True
+                        current_price = history["Close"].iloc[-1]
+                        info = stock.info
+                        raw_yield = info.get("trailingAnnualDividendYield")
+                        yield_decimal = raw_yield if raw_yield is not None else 0.0
+                    else:
+                        is_active = False
+                        current_price = 0.0
+                        yield_decimal = 0.0
+
+                    results.append({
+                        "Symbol": full_ticker,
+                        "yf_ticker": full_ticker,
+                        "Company Name": company_name,
+                        "Price": current_price,
+                        "Yield Decimal": yield_decimal, 
+                        "is_active": is_active
+                    })
+                except Exception:
+                    pass
             
     return pd.DataFrame(results)
 
 screener_df = run_screener(current_ticker_map, market_name)
 
 # -----------------------------------------------------------------------------
-# 6. RESULTS DASHBOARD & LOAD MORE BUTTON
+# 6. RESULTS DASHBOARD
 # -----------------------------------------------------------------------------
-filtered_df = screener_df[
-    (screener_df["Yield Decimal"] * 100 >= min_yield) & 
-    (screener_df["is_active"] == True)
-].copy()
+filtered_df = pd.DataFrame()
+if not screener_df.empty:
+    filtered_df = screener_df[
+        (screener_df["Yield Decimal"] * 100 >= min_yield) & 
+        (screener_df["is_active"] == True)
+    ].copy()
 
 st.divider()
 st.header(f"🎯 Screening Results")
-st.caption(f"Scanned {len(screener_df)} of {total_tickers_available} potential tickers. Showing results with yield ≥ {min_yield}%")
+scanned_count = len(screener_df) if not screener_df.empty else 0
+st.caption(f"Scanned {scanned_count} of {total_tickers_available} potential tickers. Showing results with yield ≥ {min_yield}%")
 
 if filtered_df.empty:
-    st.warning(f"No active companies in the current batch of {len(screener_df)} scanned stocks match your criteria. Try lowering the filter or clicking 'Load More'.")
+    st.warning(f"No active companies in the current batch match your criteria. Try lowering the filter or clicking 'Load More'.")
 else:
     st.dataframe(
         filtered_df,
@@ -207,7 +250,7 @@ else:
         }
     )
 
-# --- LOAD MORE BUTTON LOGIC ---
+# --- LOAD MORE LOGIC ---
 st.markdown("<div class='load-more-container'>", unsafe_allow_html=True)
 if st.session_state.display_count < total_tickers_available:
     remaining = total_tickers_available - st.session_state.display_count
@@ -226,22 +269,24 @@ st.markdown("</div>", unsafe_allow_html=True)
 st.divider()
 st.header("📜 Historical Payout Deep Dive")
 
-filtered_df["Symbol"] = filtered_df["Symbol"].astype(str)
-filtered_df["Company Name"] = filtered_df["Company Name"].astype(str)
-stock_options = dict(zip(filtered_df["yf_ticker"], filtered_df["Symbol"] + " - " + filtered_df["Company Name"]))
-
-if not stock_options:
+if filtered_df.empty:
      st.info("👆 Found stocks will appear in the dropdown here for analysis.")
 else:
+    filtered_df["Symbol"] = filtered_df["Symbol"].astype(str)
+    filtered_df["Company Name"] = filtered_df["Company Name"].astype(str)
+    stock_options = dict(zip(filtered_df["yf_ticker"], filtered_df["Symbol"] + " - " + filtered_df["Company Name"]))
+
     selected_yf_ticker = st.selectbox("Select Company to Analyze:", options=stock_options.keys(), format_func=lambda x: stock_options[x], index=None, placeholder="Choose a stock...")
 
     if selected_yf_ticker:
+        # For historical charts, yfinance is still required
         stock_obj = yf.Ticker(selected_yf_ticker)
         with st.container():
-            info = stock_obj.info
-            current_price = info.get('currentPrice', info.get('previousClose', 0))
-            raw_trailing_yield = info.get('trailingAnnualDividendYield')
-            trailing_yield = (raw_trailing_yield * 100) if raw_trailing_yield is not None else 0.0
+            # Get the accurate price we pulled from PSX earlier if applicable
+            selected_row = filtered_df[filtered_df["yf_ticker"] == selected_yf_ticker].iloc[0]
+            current_price = selected_row["Price"]
+            trailing_yield = selected_row["Yield Decimal"] * 100
+            
             st.subheader(stock_options[selected_yf_ticker])
             mcol1, mcol2 = st.columns(2)
             mcol1.metric("Current Price", f"{currency_symbol} {current_price:,.2f}")
@@ -253,6 +298,7 @@ else:
             div_df.columns = ["Date", "Amount"]
             div_df["Date"] = pd.to_datetime(div_df["Date"]).dt.date
             div_df = div_df.sort_values(by="Date", ascending=False).reset_index(drop=True)
+            
             tab1, tab2 = st.tabs(["📊 Payout Chart", "📄 Complete Data Log"])
             with tab1:
                 fig = px.bar(div_df.head(60), x="Date", y="Amount", labels={"Date": "Payout Date", "Amount": f"Dividend ({currency_symbol})"}, color_discrete_sequence=["#00C805"])
@@ -261,4 +307,4 @@ else:
             with tab2:
                 st.dataframe(div_df, use_container_width=True, hide_index=True, height=400, column_config={"Date": st.column_config.DateColumn("Payout Date", format="YYYY-MM-DD"), "Amount": st.column_config.NumberColumn(f"Amount ({currency_symbol})", format="%.2f")})
         else:
-            st.warning("No historical dividend records found for this stock.")
+            st.warning("No historical dividend records found for this stock in the global database.")
