@@ -1,9 +1,3 @@
-This redesign completely rebuilds the data-fetching engine to be bulletproof. The previous issue occurred because Yahoo Finance frequently drops the .info dictionary for Pakistan Stock Exchange (PSX) tickers, returning zero yields and failing the filter. Furthermore, live market endpoints can return empty arrays when the exchange is closed (after hours or weekends).
-This redesigned blueprint solves both problems by using a Hybrid Fallback Architecture:
- * Guaranteed Pricing: It fetches the last known closing price directly from the official PSX API. It works 24/7, whether the market is open or closed.
- * Manual Yield Calculation: Instead of relying on Yahoo's broken .info dictionary, the app downloads the raw dividend history and mathematically calculates the exact trailing 12-month yield against the live price.
-Here is the complete, production-ready app.py.
-app.py
 import streamlit as st
 import pandas as pd
 import yfinance as yf
@@ -280,4 +274,3 @@ if not filtered_df.empty:
             st.info("Dividend records are not available for this entity in the global database.")
 else:
     st.info("Find a stock using the screener above to view its history here.")
-
